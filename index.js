@@ -2,7 +2,8 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const OpenAI = require("openai");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -17,9 +18,13 @@ app.use(
 
 app.use(express.json());
 
+// OpenAI setup (latest SDK v4+)
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 // MongoDB Connection
 const uri = process.env.MONGODB_URI;
-
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -37,13 +42,13 @@ async function run() {
     const usersCollection = db.collection("users");
     const dashboardCollection = db.collection("dashboard");
     const classesCollection = db.collection("classes");
-    // Save or Update User API
+
+    // Save or Update User
     app.post("/users", async (req, res) => {
       try {
         const user = req.body;
-        if (!user.email) {
+        if (!user.email)
           return res.status(400).json({ message: "Email is required" });
-        }
 
         const query = { email: user.email };
         const updatedDoc = {
@@ -74,10 +79,10 @@ async function run() {
     // Get all users
     app.get("/users", async (req, res) => {
       const users = await usersCollection.find().toArray();
-      res.send(users);
+      res.json(users);
     });
 
-    // POST /dashboard - add a dashboard item
+    // Dashboard endpoints
     app.post("/dashboard", async (req, res) => {
       try {
         const item = req.body;
@@ -94,7 +99,6 @@ async function run() {
       }
     });
 
-    // GET /dashboard - get all dashboard items
     app.get("/dashboard", async (req, res) => {
       try {
         const items = await dashboardCollection.find().toArray();
@@ -106,7 +110,7 @@ async function run() {
       }
     });
 
-    // Get all classes
+    // Classes endpoints
     app.get("/api/classes", async (req, res) => {
       try {
         const classes = await classesCollection.find().toArray();
@@ -117,7 +121,6 @@ async function run() {
       }
     });
 
-    // Add new class
     app.post("/api/classes", async (req, res) => {
       try {
         const newClass = req.body;
@@ -129,7 +132,6 @@ async function run() {
       }
     });
 
-    // Update class
     app.put("/api/classes/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -157,7 +159,6 @@ async function run() {
       }
     });
 
-    // Delete class
     app.delete("/api/classes/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -172,11 +173,58 @@ async function run() {
       }
     });
 
+    // AI Suggestions endpoint
+    app.post("/ai/suggest", async (req, res) => {
+      const { totalClasses, upcomingExams, weeklyPerformance, weakTopics } =
+        req.body;
+
+      try {
+        const prompt = `
+You are an academic assistant.
+Total classes: ${totalClasses}
+Upcoming exams: ${upcomingExams}
+Weekly performance: ${weeklyPerformance?.join(", ") || "None"}
+Weak topics: ${weakTopics?.join(", ") || "None"}
+
+Suggest 5 concise, actionable study tips for the student.
+`;
+
+        const response = await openai.chat.completions.create({
+          model: "gpt-3.5-turbo",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+        });
+
+        const tipsText = response.choices[0].message.content;
+        const tips = tipsText
+          .split("\n")
+          .map((t) => t.replace(/^\d+\.?\s*/, "").trim())
+          .filter((t) => t);
+
+        res.json({ tips });
+      } catch (err) {
+        console.error("OpenAI Error:", err);
+
+        if (err.code === "insufficient_quota" || err.status === 429) {
+          return res.status(429).json({
+            message:
+              "OpenAI quota exceeded or rate limit hit. Please try again later.",
+          });
+        }
+
+        res.status(500).json({
+          message: "Failed to generate AI suggestions",
+          error: err.message || err,
+        });
+      }
+    });
+
     // Root route
     app.get("/", (req, res) => {
       res.send("🚀 student-life-toolkit-server is running");
     });
 
+    // Start server
     app.listen(port, () => {
       console.log(`✅ Server running on port: ${port}`);
     });
