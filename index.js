@@ -4,7 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const OpenAI = require("openai");
-
+const nodemailer = require("nodemailer");
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -21,6 +21,14 @@ app.use(express.json());
 // OpenAI setup (latest SDK v4+)
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+});
+
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
 });
 
 // MongoDB Connection
@@ -42,6 +50,9 @@ async function run() {
     const usersCollection = db.collection("users");
     const dashboardCollection = db.collection("dashboard");
     const classesCollection = db.collection("classes");
+    const budgetCollection = db.collection("budget");
+    const questionsCollection = db.collection("questions");
+    const plannerCollection = db.collection("monthlyPlannerTasks");
 
     // Save or Update User
     app.post("/users", async (req, res) => {
@@ -83,6 +94,7 @@ async function run() {
     });
 
     // Dashboard endpoints
+
     app.post("/dashboard", async (req, res) => {
       try {
         const item = req.body;
@@ -215,6 +227,381 @@ Suggest 5 concise, actionable study tips for the student.
         res.status(500).json({
           message: "Failed to generate AI suggestions",
           error: err.message || err,
+        });
+      }
+    });
+
+    // GET /budget - fetch all budget items
+    app.get("/budget", async (req, res) => {
+      try {
+        const items = await budgetCollection.find().toArray();
+        res.status(200).json(items);
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .json({ message: "Failed to fetch budget items", error });
+      }
+    });
+
+    // POST /budget - add a new budget item
+    app.post("/budget", async (req, res) => {
+      try {
+        const { type, category, amount, date, description } = req.body;
+        if (!type || !category || !amount || !date) {
+          return res
+            .status(400)
+            .json({ message: "Required fields are missing" });
+        }
+
+        const result = await budgetCollection.insertOne({
+          type,
+          category,
+          amount,
+          date,
+          description,
+        });
+
+        res.status(201).json({ ...req.body, _id: result.insertedId });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to add budget item", error });
+      }
+    });
+
+    // DELETE /budget/:id - delete a budget item
+    app.delete("/budget/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ message: "Invalid budget ID" });
+        }
+
+        await budgetCollection.deleteOne({ _id: new ObjectId(id) });
+        res.status(200).json({ message: "Budget item deleted" });
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .json({ message: "Failed to delete budget item", error });
+      }
+    });
+
+    // PUT /budget/:id - update a budget item
+    app.put("/budget/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ message: "Invalid budget ID" });
+        }
+
+        const { type, category, amount, date, description } = req.body;
+        const result = await budgetCollection.findOneAndUpdate(
+          { _id: new ObjectId(id) },
+          { $set: { type, category, amount, date, description } },
+          { returnDocument: "after" }
+        );
+
+        if (!result.value)
+          return res.status(404).json({ message: "Item not found" });
+
+        res.status(200).json(result.value);
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .json({ message: "Failed to update budget item", error });
+      }
+    });
+
+    // GET all questions
+    app.get("/questions", async (req, res) => {
+      try {
+        const questions = await questionsCollection.find().toArray();
+        res.status(200).json(questions);
+      } catch (err) {
+        console.error("Fetch questions error:", err);
+        res
+          .status(500)
+          .json({ message: "Failed to fetch questions", error: err });
+      }
+    });
+
+    // POST new question
+    app.post("/questions", async (req, res) => {
+      try {
+        const { type, difficulty, question, options, answer } = req.body;
+        if (!type || !difficulty || !question || !answer) {
+          return res.status(400).json({ message: "Missing required fields" });
+        }
+
+        if (type === "MCQ" && (!options || options.length < 2)) {
+          return res
+            .status(400)
+            .json({ message: "MCQ must have at least 2 options" });
+        }
+
+        const newQuestion = {
+          type,
+          difficulty,
+          question,
+          options,
+          answer,
+          createdAt: new Date(),
+        };
+        const result = await questionsCollection.insertOne(newQuestion);
+        res.status(201).json({ ...newQuestion, _id: result.insertedId });
+      } catch (err) {
+        console.error("Add question error:", err);
+        res.status(500).json({ message: "Failed to add question", error: err });
+      }
+    });
+
+    // DELETE question by ID
+    app.delete("/questions/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id))
+          return res.status(400).json({ message: "Invalid question ID" });
+
+        const result = await questionsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        if (result.deletedCount === 0)
+          return res.status(404).json({ message: "Question not found" });
+
+        res.status(200).json({ message: "Question deleted successfully" });
+      } catch (err) {
+        console.error("Delete question error:", err);
+        res
+          .status(500)
+          .json({ message: "Failed to delete question", error: err });
+      }
+    });
+
+    // GET all tasks
+    app.get("/planner", async (req, res) => {
+      try {
+        const docs = await plannerCollection.find().toArray();
+        const result = {};
+        docs.forEach((doc) => {
+          result[doc.date] = doc.tasks || [];
+        });
+        res.status(200).json(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to fetch tasks", error: err });
+      }
+    });
+
+    // POST add a task
+    app.post("/planner", async (req, res) => {
+      try {
+        const { date, subject, priority, notes } = req.body;
+        if (!date || !subject)
+          return res.status(400).json({ message: "Date & subject required" });
+
+        const newTask = {
+          id: Date.now(), // unique numeric ID
+          subject,
+          priority: priority || "Medium",
+          notes: notes || "",
+          completed: false,
+          notified: false,
+        };
+
+        const existing = await plannerCollection.findOne({ date });
+        if (existing) {
+          // Push directly to tasks array
+          await plannerCollection.updateOne(
+            { date },
+            { $push: { tasks: newTask } }
+          );
+        } else {
+          await plannerCollection.insertOne({ date, tasks: [newTask] });
+        }
+
+        res.status(201).json(newTask);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to add task", error: err });
+      }
+    });
+
+    // PUT toggle complete or move task
+    app.put("/planner/:date/:id", async (req, res) => {
+      try {
+        const { date, id } = req.params;
+        const { completed, date: newDate } = req.body;
+
+        // Toggle complete
+        if (completed !== undefined) {
+          await plannerCollection.updateOne(
+            { date, "tasks.id": Number(id) },
+            { $set: { "tasks.$.completed": completed } }
+          );
+        }
+
+        // Move task to another date
+        if (newDate && newDate !== date) {
+          const taskDoc = await plannerCollection.findOne({ date });
+          const task = taskDoc.tasks.find((t) => t.id == id);
+          if (!task) return res.status(404).json({ message: "Task not found" });
+
+          // Remove from old date
+          await plannerCollection.updateOne(
+            { date },
+            { $pull: { tasks: { id: Number(id) } } }
+          );
+
+          // Insert into new date
+          const existingNew = await plannerCollection.findOne({
+            date: newDate,
+          });
+          if (existingNew) {
+            await plannerCollection.updateOne(
+              { date: newDate },
+              { $push: { tasks: task } }
+            );
+          } else {
+            await plannerCollection.insertOne({ date: newDate, tasks: [task] });
+          }
+        }
+
+        res.json({ success: true });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to update task", error: err });
+      }
+    });
+
+    // DELETE task
+    app.delete("/planner/:date/:id", async (req, res) => {
+      try {
+        const { date, id } = req.params;
+        await plannerCollection.updateOne(
+          { date },
+          { $pull: { tasks: { id: Number(id) } } }
+        );
+        res.json({ success: true });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to delete task", error: err });
+      }
+    });
+
+    // POST import tasks (JSON)
+    app.post("/planner/import", async (req, res) => {
+      try {
+        const imported = req.body; // { "2025-09-01": [task, ...], ... }
+        await plannerCollection.deleteMany({}); // clear old
+        const docs = Object.keys(imported).map((date) => ({
+          date,
+          tasks: imported[date],
+        }));
+        await plannerCollection.insertMany(docs);
+        res.json({ success: true });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to import tasks", error: err });
+      }
+    });
+
+    // GET export tasks
+    app.get("/planner/export", async (req, res) => {
+      try {
+        const docs = await plannerCollection.find().toArray();
+        const result = {};
+        docs.forEach((doc) => {
+          result[doc.date] = doc.tasks || [];
+        });
+        res.setHeader("Content-Disposition", "attachment; filename=tasks.json");
+        res.json(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to export tasks", error: err });
+      }
+    });
+
+    // Send Email Notification
+    app.post("/planner/notify/:id", async (req, res) => {
+      const { id } = req.params;
+      const { date } = req.body;
+
+      try {
+        const taskDoc = await plannerCollection.findOne({ date });
+        if (!taskDoc) {
+          return res.status(404).json({ message: "Date not found" });
+        }
+
+        const task = taskDoc.tasks.find((t) => t.id === Number(id));
+        if (!task) {
+          return res.status(404).json({ message: "Task not found" });
+        }
+
+        if (task.notified) {
+          return res.status(400).json({ message: "Already notified" });
+        }
+
+        const mailOptions = {
+          from: `"Student Life Toolkit" <${process.env.EMAIL_USER}>`,
+          to: process.env.EMAIL_USER,
+          subject: `📌 Task Reminder: ${task.subject}`,
+          html: `
+      <div style="max-width: 600px; margin: 20px auto; padding: 20px; background-color: #f9f9f9; font-family: Arial, sans-serif; border-radius: 12px; box-shadow: 0px 4px 15px rgba(0, 0, 0, 0.1);">
+        <h2 style="text-align: center; color: #4F46E5; margin-bottom: 10px;">⏰ Task Reminder</h2>
+        <p style="font-size: 16px; color: #333; text-align: center;">
+          Hello! You have an upcoming task scheduled on 
+          <strong style="color: #4F46E5;">${taskDoc.date}</strong>.
+        </p>
+
+        <div style="background: #ffffff; padding: 15px 20px; border-radius: 8px; margin-top: 15px; border-left: 5px solid #4F46E5;">
+          <p style="font-size: 16px; margin: 5px 0;"><strong>📌 Task:</strong> ${
+            task.subject
+          }</p>
+          <p style="font-size: 16px; margin: 5px 0;"><strong>⚡ Priority:</strong> ${
+            task.priority
+          }</p>
+          <p style="font-size: 16px; margin: 5px 0;"><strong>📝 Notes:</strong> ${
+            task.notes || "No additional notes"
+          }</p>
+        </div>
+
+        <p style="margin-top: 15px; font-size: 14px; color: #555;">
+          ✅ Don't forget to complete your task on time! Staying consistent keeps you ahead! 🚀
+        </p>
+
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="https://student-life-toolkit.com" style="padding: 10px 20px; background-color: #4F46E5; color: white; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: bold;">
+            Open Toolkit
+          </a>
+        </div>
+
+        <hr style="margin: 25px 0; border: none; border-top: 1px solid #e5e7eb;" />
+        <p style="text-align: center; font-size: 12px; color: #888;">
+          © ${new Date().getFullYear()} Student Life Toolkit | All Rights Reserved
+        </p>
+      </div>
+      `,
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+        console.log("✅ Email sent:", info.response);
+
+        await plannerCollection.updateOne(
+          { date, "tasks.id": Number(id) },
+          { $set: { "tasks.$.notified": true } }
+        );
+
+        res.json({
+          success: true,
+          message: "📩 Email notification sent successfully!",
+        });
+      } catch (err) {
+        console.error("❌ Email Error:", err);
+        res.status(500).json({
+          message: "Failed to send notification",
+          error: err.message,
         });
       }
     });
