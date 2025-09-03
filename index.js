@@ -428,46 +428,62 @@ Suggest 5 concise, actionable study tips for the student.
       }
     });
 
-    // PUT toggle complete or move task
+    // PUT move task to another date
+    app.put("/planner/move/:id", async (req, res) => {
+      try {
+        const { id } = req.params; // Task ID
+        const { newDate } = req.body; // New date string
+
+        if (!newDate)
+          return res.status(400).json({ message: "New date required" });
+
+        // 1️⃣ Find the task in any date
+        const taskDoc = await plannerCollection.findOne({
+          "tasks.id": Number(id),
+        });
+        if (!taskDoc)
+          return res.status(404).json({ message: "Task not found" });
+
+        const task = taskDoc.tasks.find((t) => t.id === Number(id));
+        const oldDate = taskDoc.date;
+
+        // 2️⃣ Remove task from old date
+        await plannerCollection.updateOne(
+          { "tasks.id": Number(id) },
+          { $pull: { tasks: { id: Number(id) } } }
+        );
+
+        // 2a️⃣ Check if oldDate document is empty now, delete if empty
+        const updatedOldDoc = await plannerCollection.findOne({
+          date: oldDate,
+        });
+        if (updatedOldDoc && updatedOldDoc.tasks.length === 0) {
+          await plannerCollection.deleteOne({ date: oldDate });
+        }
+
+        // 3️⃣ Add task to new date
+        await plannerCollection.updateOne(
+          { date: newDate },
+          { $push: { tasks: task } },
+          { upsert: true } // newDate document না থাকলে তৈরি হবে
+        );
+
+        res.json({ success: true });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to move task", error: err });
+      }
+    });
+
+    // PUT toggle complete
     app.put("/planner/:date/:id", async (req, res) => {
       try {
         const { date, id } = req.params;
-        const { completed, date: newDate } = req.body;
-
-        // Toggle complete
-        if (completed !== undefined) {
-          await plannerCollection.updateOne(
-            { date, "tasks.id": Number(id) },
-            { $set: { "tasks.$.completed": completed } }
-          );
-        }
-
-        // Move task to another date
-        if (newDate && newDate !== date) {
-          const taskDoc = await plannerCollection.findOne({ date });
-          const task = taskDoc.tasks.find((t) => t.id == id);
-          if (!task) return res.status(404).json({ message: "Task not found" });
-
-          // Remove from old date
-          await plannerCollection.updateOne(
-            { date },
-            { $pull: { tasks: { id: Number(id) } } }
-          );
-
-          // Insert into new date
-          const existingNew = await plannerCollection.findOne({
-            date: newDate,
-          });
-          if (existingNew) {
-            await plannerCollection.updateOne(
-              { date: newDate },
-              { $push: { tasks: task } }
-            );
-          } else {
-            await plannerCollection.insertOne({ date: newDate, tasks: [task] });
-          }
-        }
-
+        const { completed } = req.body;
+        await plannerCollection.updateOne(
+          { date, "tasks.id": Number(id) },
+          { $set: { "tasks.$.completed": completed } }
+        );
         res.json({ success: true });
       } catch (err) {
         console.error(err);
@@ -479,10 +495,41 @@ Suggest 5 concise, actionable study tips for the student.
     app.delete("/planner/:date/:id", async (req, res) => {
       try {
         const { date, id } = req.params;
+
+        // 1️⃣ Task remove করা
         await plannerCollection.updateOne(
           { date },
           { $pull: { tasks: { id: Number(id) } } }
         );
+
+        // 2️⃣ Check করো যদি tasks খালি হয়, document remove করা
+        const doc = await plannerCollection.findOne({ date });
+        if (doc && (!doc.tasks || doc.tasks.length === 0)) {
+          await plannerCollection.deleteOne({ date });
+        }
+
+        res.json({ success: true });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to delete task", error: err });
+      }
+    });
+    app.delete("/planner/:date/:id", async (req, res) => {
+      try {
+        const { date, id } = req.params;
+
+        // 1️⃣ Task remove করা
+        await plannerCollection.updateOne(
+          { date },
+          { $pull: { tasks: { id: Number(id) } } }
+        );
+
+        // 2️⃣ Check করো যদি tasks খালি হয়, document remove করা
+        const doc = await plannerCollection.findOne({ date });
+        if (doc && (!doc.tasks || doc.tasks.length === 0)) {
+          await plannerCollection.deleteOne({ date });
+        }
+
         res.json({ success: true });
       } catch (err) {
         console.error(err);
