@@ -316,67 +316,48 @@ Suggest 5 concise, actionable study tips for the student.
 
     // GET all questions
     app.get("/questions", async (req, res) => {
-      try {
-        const questions = await questionsCollection.find().toArray();
-        res.status(200).json(questions);
-      } catch (err) {
-        console.error("Fetch questions error:", err);
-        res
-          .status(500)
-          .json({ message: "Failed to fetch questions", error: err });
-      }
+      const questions = await questionsCollection.find({}).toArray();
+      const formatted = questions.map((q) => ({ ...q, _id: q._id.toString() }));
+      res.json(formatted);
     });
 
     // POST new question
     app.post("/questions", async (req, res) => {
-      try {
-        const { type, difficulty, question, options, answer } = req.body;
-        if (!type || !difficulty || !question || !answer) {
-          return res.status(400).json({ message: "Missing required fields" });
-        }
-
-        if (type === "MCQ" && (!options || options.length < 2)) {
-          return res
-            .status(400)
-            .json({ message: "MCQ must have at least 2 options" });
-        }
-
-        const newQuestion = {
-          type,
-          difficulty,
-          question,
-          options,
-          answer,
-          createdAt: new Date(),
-        };
-        const result = await questionsCollection.insertOne(newQuestion);
-        res.status(201).json({ ...newQuestion, _id: result.insertedId });
-      } catch (err) {
-        console.error("Add question error:", err);
-        res.status(500).json({ message: "Failed to add question", error: err });
-      }
+      const payload = req.body;
+      const result = await questionsCollection.insertOne(payload);
+      res.json({ ...payload, _id: result.insertedId.toString() });
     });
 
-    // DELETE question by ID
-    app.delete("/questions/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-        if (!ObjectId.isValid(id))
-          return res.status(400).json({ message: "Invalid question ID" });
+    // PUT update question
+    app.put("/questions/:id", async (req, res) => {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ message: "Invalid ID" });
 
-        const result = await questionsCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-        if (result.deletedCount === 0)
-          return res.status(404).json({ message: "Question not found" });
-
-        res.status(200).json({ message: "Question deleted successfully" });
-      } catch (err) {
-        console.error("Delete question error:", err);
-        res
-          .status(500)
-          .json({ message: "Failed to delete question", error: err });
+      const payload = req.body;
+      if (payload.type === "MCQ") {
+        payload.options = (payload.options || [])
+          .map((o) => o.trim())
+          .filter(Boolean);
       }
+
+      const result = await questionsCollection.findOneAndUpdate(
+        { _id: new ObjectId(id) },
+        { $set: payload },
+        { returnDocument: "after" }
+      );
+
+      if (!result.value)
+        return res.status(404).json({ message: "Question not found" });
+
+      res.json({ ...result.value, _id: result.value._id.toString() });
+    });
+
+    // DELETE question
+    app.delete("/questions/:id", async (req, res) => {
+      const { id } = req.params;
+      await questionsCollection.deleteOne({ _id: new ObjectId(id) });
+      res.json({ message: "Deleted successfully" });
     });
 
     // GET all tasks
@@ -492,28 +473,6 @@ Suggest 5 concise, actionable study tips for the student.
     });
 
     // DELETE task
-    app.delete("/planner/:date/:id", async (req, res) => {
-      try {
-        const { date, id } = req.params;
-
-        // 1️⃣ Task remove করা
-        await plannerCollection.updateOne(
-          { date },
-          { $pull: { tasks: { id: Number(id) } } }
-        );
-
-        // 2️⃣ Check করো যদি tasks খালি হয়, document remove করা
-        const doc = await plannerCollection.findOne({ date });
-        if (doc && (!doc.tasks || doc.tasks.length === 0)) {
-          await plannerCollection.deleteOne({ date });
-        }
-
-        res.json({ success: true });
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Failed to delete task", error: err });
-      }
-    });
     app.delete("/planner/:date/:id", async (req, res) => {
       try {
         const { date, id } = req.params;
